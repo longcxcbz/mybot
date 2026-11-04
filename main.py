@@ -21,7 +21,7 @@ logging.basicConfig(
 FILE_DATABASE = {}
 
 # ==========================================
-# 1. 维持 Render 端口的网页服务器
+# 1. 维持 Render 端口的网页服务器（必须保留，防止 Render 报错）
 # ==========================================
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -39,7 +39,7 @@ def run_web_server():
 threading.Thread(target=run_web_server, daemon=True).start()
 
 # ==========================================
-# 2. 核心功能 A：接收你发的文件，生成分享链接
+# 2. 核心功能 A：接收你发的文件，生成防掉下划线的安全链接
 # ==========================================
 async def handle_incoming_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
@@ -60,16 +60,17 @@ async def handle_incoming_media(update: Update, context: ContextTypes.DEFAULT_TY
     short_code = file_id[-8:]
     FILE_DATABASE[short_code] = file_id
 
-    # 直接写死你的真实机器人用户名
+    # 严格写死你的真实 Telegram 用户名（带下划线和正确大小写）
     bot_username = "Yinheximanyoua_bot"
-    share_link = f"https://t.me/{bot_username}?start={short_code}"
+    raw_link = f"https://t.me/{bot_username}?start={short_code}"
 
-    # 返回登记成功提示与分享链接
+    # 使用 Markdown 超链接语法，彻底避免下划线被吞或点错
     text = (
         f"✅ **已接收并保存登记**\n\n"
         f"📦 类型：{file_type}\n"
-        f"🔗 **分享链接**：\n{share_link}\n\n"
-        f"💡 用户点击上方链接即可直接获取此文件。"
+        f"🔗 **专属分享链接**：\n"
+        f"[点击此链接直接获取文件]({raw_link})\n\n"
+        f"💡 如果无法直接点击，请复制下方完整链接：\n`{raw_link}`"
     )
 
     await message.reply_text(text, parse_mode="Markdown")
