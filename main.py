@@ -2,11 +2,13 @@ import logging
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 # 开启日志
@@ -15,7 +17,13 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-# 1. 维持 Render Web Service 必需的极简端口服务器
+# 内存临时字典（用来存储 文件短码 -> file_id 的对应关系）
+# 提示：如果希望重启后不丢失，后期可以换成数据库，目前用于演示非常高效
+FILE_DATABASE = {}
+
+# ==========================================
+# 1. 维持 Render 端口的网页服务器
+# ==========================================
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -31,17 +39,72 @@ def run_web_server():
 
 threading.Thread(target=run_web_server, daemon=True).start()
 
-# 2. 核心功能：处理带参数的 /start 命令
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    if args:
-        file_key = args[0]  # 获取链接里的参数（例如 file_id 或资源编号）
-        await update.message.reply_text(f"正在为您提取资源，编号：{file_key}")
-        # 这里你可以直接通过 file_key（文件ID）把图片或视频发给用户：
-        # await context.bot.send_photo(chat_id=update.effective_chat.id, photo=file_key)
-    else:
-        await update.message.reply_text("欢迎使用！请通过专属推广链接进入本机器人。")
+# ==========================================
+# 2. 核心功能 A：接收你发的文件，生成分享链接
+# ==========================================
+async def handle_incoming_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    if not message:
+        return
 
+    # 提取图片或视频的 file_id
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        file_type = "图片"
+    elif message.video:
+        file_id = message.video.file_id
+        file_type = "视频"
+    else:
+        return
+
+    # 生成一个简短的唯一编号（例如取 file_id 的前 8 位当作代号）
+    short_code = file_id[-8:]
+    FILE_DATABASE[short_code] = file_id
+
+    # 你的机器人用户名（请把 "你的机器人用户名" 换成你自己的机器人 username，比如 my_bot）
+    bot_username = context.bot.username
+    share_link = f"https://t.me/{bot_username}?start={short_code}"
+
+    # 返回类似截图中的登记成功提示与分享链接
+    text = (
+        f"✅ **已接收并保存登记**\n\n"
+        f"📦 类型：{file_type}\n"
+        f"🔗 **分享链接**：\n{share_link}\n\n"
+        f"💡 用户点击上方链接即可直接获取此文件。"
+    )
+
+    await message.reply_text(text, parse_mode="Markdown")
+
+# ==========================================
+# 3. 核心功能 B：用户点击链接触发 /start，下发文件
+# ==========================================
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    chat_id = update.effective_chat.id
+
+    if args:
+        short_code = args[0]
+        # 在数据库中查找对应的 file_id
+        file_id = FILE_DATABASE.get(short_code)
+
+        if file_id:
+            await update.message.reply_text("🔍 正在为您提取文件，请稍候...")
+            # 自动把对应的图片或视频发给用户
+            try:
+                await context.bot.send_photo(chat_id=chat_id, photo=file_id)
+            except Exception:
+                try:
+                    await context.bot.send_video(chat_id=chat_id, video=file_id)
+                except Exception:
+                    await update.message.reply_text("❌ 文件提取失败或已失效。")
+        else:
+            await update.message.reply_text("❌ 未找到该文件的记录，链接可能已失效。")
+    else:
+        await update.message.reply_text("欢迎使用资源分发机器人！请通过专属链接获取内容。")
+
+# ==========================================
+# 4. 主程序入口
+# ==========================================
 def main():
     token = os.environ.get("TOKEN")
     if not token:
@@ -49,11 +112,13 @@ def main():
         return
 
     application = ApplicationBuilder().token(token).build()
-    
-    # 注册 /start 命令监听
-    application.add_handler(CommandHandler("start", start))
 
-    print("机器人已启动...")
+    # 注册 /start 命令
+    application.add_handler(CommandHandler("start", start_command))
+    # 注册接收媒体文件的处理器
+    application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handle_incoming_media))
+
+    print("网盘分发机器人正在运行...")
     application.run_polling()
 
 if __name__ == "__main__":
