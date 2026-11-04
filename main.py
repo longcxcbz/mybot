@@ -23,18 +23,13 @@ logging.basicConfig(
 # ==========================================
 # 🎁 广告配置区域（以后只需在这里修改文案和链接即可）
 # ==========================================
-AD_TEXT = (
-    "━━━━━━━━━━━━\n"
-    "📢 **赞助商 / 长期福利频道**：\n"
-    "👉 点击加入 [@你的主频道名称](https://t.me/你的频道链接)\n"
-    "苹果限免 App 每日分享，精品资源不迷路！"
-)
-AD_BUTTON_TEXT = "📢 关注苹果限免/优质广告频道"
+AD_TEXT = "赞助商/长期福利：苹果限免App每日分享，精品资源不迷路！"
+AD_BUTTON_TEXT = "关注优质广告频道"
 AD_BUTTON_URL = "https://t.me/你的频道链接"
 # ==========================================
 
 # ==========================================
-# 0. 初始化 SQLite 数据库（实现永久保存，重启不丢）
+# 0. 初始化 SQLite 数据库
 # ==========================================
 DB_FILE = "bot_database.db"
 
@@ -134,9 +129,149 @@ async def handle_incoming_media(update: Update, context: ContextTypes.DEFAULT_TY
     UPLOADING_SESSIONS[chat_id]["files"].append({"type": file_type, "file_id": file_id})
     total_count = len(UPLOADING_SESSIONS[chat_id]["files"])
 
-    keyboard = [[InlineKeyboardButton("✅ 已接收完，完成打包并生成", callback_data="finish_group")]]
+    keyboard = [[InlineKeyboardButton("已接收完，完成打包并生成", callback_data="finish_group")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    text = (
-        f"📦 **正在收集文件中...**\n\n"
-        f"当前已累计暂存：**{total_count}** 个文件\n"
-        f"💡 发完
+    text = f"正在收集文件中...\n\n当前已累计暂存：{total_count} 个文件\n发完后点击下方按钮生成链接。"
+
+    current_msg_id = UPLOADING_SESSIONS[chat_id]["msg_id"]
+    try:
+        if current_msg_id is None:
+            sent_msg = await message.reply_text(text, reply_markup=reply_markup)
+            UPLOADING_SESSIONS[chat_id]["msg_id"] = sent_msg.message_id
+        else:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=current_msg_id, text=text, reply_markup=reply_markup
+            )
+    except Exception:
+        sent_msg = await message.reply_text(text, reply_markup=reply_markup)
+        UPLOADING_SESSIONS[chat_id]["msg_id"] = sent_msg.message_id
+
+# ==========================================
+# 3. 按钮回调（打包生成 或 管理后台操作）
+# ==========================================
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    data = query.data
+
+    if data == "finish_group":
+        session_data = UPLOADING_SESSIONS.get(chat_id, {"files": [], "msg_id": None})
+        session_files = session_data["files"]
+
+        if not session_files:
+            await query.message.reply_text("当前没有待打包的文件。")
+            return
+
+        short_code = session_files[0]["file_id"][-8:]
+        db_save_resource(short_code, session_files)
+        UPLOADING_SESSIONS[chat_id] = {"files": [], "msg_id": None}
+
+        bot_username = "Yinheximanyoua_bot"
+        raw_link = f"https://t.me/{bot_username}?start={short_code}"
+
+        text = (
+            f"打包成功并已永久保存！\n\n"
+            f"包含文件总数：{len(session_files)} 个\n"
+            f"专属分享链接：\n{raw_link}\n\n"
+            f"{AD_TEXT}\n\n"
+            f"发送 /admin 可以管理历史文件。"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("点击获取全部文件", url=raw_link)],
+            [InlineKeyboardButton(AD_BUTTON_TEXT, url=AD_BUTTON_URL)]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.message.reply_text(text, reply_markup=reply_markup)
+
+    elif data.startswith("del_"):
+        short_code = data.split("_")[1]
+        db_delete_resource(short_code)
+        await query.message.edit_text(f"已成功删除代码为 {short_code} 的资源记录。")
+
+    elif data.startswith("view_"):
+        short_code = data.split("_")[1]
+        bot_username = "Yinheximanyoua_bot"
+        raw_link = f"https://t.me/{bot_username}?start={short_code}"
+        await query.message.reply_text(f"资源详情\n识别码：{short_code}\n链接：\n{raw_link}")
+
+# ==========================================
+# 4. 管理后台菜单：/admin 命令
+# ==========================================
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    resources = db_get_all_resources()
+
+    if not resources:
+        await update.message.reply_text("目前数据库中还没有保存任何资源文件。")
+        return
+
+    text = f"资源管理后台\n共找到 {len(resources)} 组历史保存的文件：\n"
+    keyboard = []
+
+    for item in resources:
+        code = item["short_code"]
+        count = item["count"]
+        keyboard.append([
+            InlineKeyboardButton(f"资源 {code} ({count}个)", callback_data=f"view_{code}"),
+            InlineKeyboardButton("删除", callback_data=f"del_{code}")
+        ])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(text, reply_markup=reply_markup)
+
+# ==========================================
+# 5. 用户通过 /start 触发下发
+# ==========================================
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    chat_id = update.effective_chat.id
+
+    if args:
+        short_code = args[0]
+        file_list = db_get_resource(short_code)
+
+        if file_list:
+            total = len(file_list)
+            await update.message.reply_text(f"正在为您提取共 {total} 个文件，分批发送中...")
+
+            for i in range(0, total, 10):
+                chunk = file_list[i:i+10]
+                media_group = []
+                for item in chunk:
+                    if item["type"] == "photo":
+                        media_group.append(InputMediaPhoto(media=item["file_id"]))
+                    elif item["type"] == "video":
+                        media_group.append(InputMediaVideo(media=item["file_id"]))
+
+                try:
+                    await context.bot.send_media_group(chat_id=chat_id, media=media_group)
+                except Exception as e:
+                    await update.message.reply_text(f"发送分批文件出错: {e}")
+        else:
+            await update.message.reply_text("未找到该组文件的记录，链接可能已失效。")
+    else:
+        await update.message.reply_text("欢迎使用资源打包分发机器人！通过专属链接可获取完整相册。")
+
+# ==========================================
+# 6. 主程序入口
+# ==========================================
+def main():
+    token = os.environ.get("TOKEN")
+    if not token:
+        print("错误: 未找到 TOKEN 环境变量！")
+        return
+
+    application = ApplicationBuilder().token(token).build()
+
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("admin", admin_command))
+    application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handle_incoming_media))
+    application.add_handler(CallbackQueryHandler(button_callback))
+
+    print("网盘分发机器人正在运行...")
+    application.run_polling()
+
+if __name__ == "__main__":
+    main()
