@@ -1,5 +1,7 @@
 import logging
 import os
+import sqlite3
+import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, Update
@@ -18,11 +20,76 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-# 内存数据库：分享码 -> 文件列表
-GROUP_DATABASE = {}
+# ==========================================
+# 🎁 广告配置区域（以后只需在这里修改文案和链接即可）
+# ==========================================
+AD_TEXT = (
+    "━━━━━━━━━━━━\n"
+    "📢 **赞助商 / 长期福利频道**：\n"
+    "👉 点击加入 [@你的主频道名称](https://t.me/你的频道链接)\n"
+    "苹果限免 App 每日分享，精品资源不迷路！"
+)
+AD_BUTTON_TEXT = "📢 关注苹果限免/优质广告频道"
+AD_BUTTON_URL = "https://t.me/你的频道链接"
+# ==========================================
 
-# 临时会话：记录当前正在上传的文件与提示消息的 ID（实现防刷屏动态更新）
-# 结构：{ chat_id: {"files": [...], "msg_id": 12345} }
+# ==========================================
+# 0. 初始化 SQLite 数据库（实现永久保存，重启不丢）
+# ==========================================
+DB_FILE = "bot_database.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS resources (
+            short_code TEXT PRIMARY KEY,
+            file_list TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def db_save_resource(short_code, file_list):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO resources (short_code, file_list) VALUES (?, ?)", 
+                   (short_code, json.dumps(file_list)))
+    conn.commit()
+    conn.close()
+
+def db_get_resource(short_code):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT file_list FROM resources WHERE short_code = ?", (short_code,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return json.loads(row[0])
+    return None
+
+def db_get_all_resources():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT short_code, file_list FROM resources ORDER BY created_at DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    results = []
+    for row in rows:
+        results.append({"short_code": row[0], "count": len(json.loads(row[1]))})
+    return results
+
+def db_delete_resource(short_code):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM resources WHERE short_code = ?", (short_code,))
+    conn.commit()
+    conn.close()
+
+# 临时会话缓存
 UPLOADING_SESSIONS = {}
 
 # ==========================================
@@ -44,7 +111,7 @@ def run_web_server():
 threading.Thread(target=run_web_server, daemon=True).start()
 
 # ==========================================
-# 2. 接收文件：单条消息动态更新，绝不刷屏
+# 2. 接收文件：防刷屏动态更新
 # ==========================================
 async def handle_incoming_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
@@ -52,7 +119,6 @@ async def handle_incoming_media(update: Update, context: ContextTypes.DEFAULT_TY
         return
     chat_id = message.chat_id
 
-    # 提取图片或视频
     if message.photo:
         file_id = message.photo[-1].file_id
         file_type = "photo"
@@ -62,132 +128,15 @@ async def handle_incoming_media(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         return
 
-    # 初始化会话
     if chat_id not in UPLOADING_SESSIONS:
         UPLOADING_SESSIONS[chat_id] = {"files": [], "msg_id": None}
 
-    # 存入文件
     UPLOADING_SESSIONS[chat_id]["files"].append({"type": file_type, "file_id": file_id})
     total_count = len(UPLOADING_SESSIONS[chat_id]["files"])
 
-    # 准备按钮与提示文案
     keyboard = [[InlineKeyboardButton("✅ 已接收完，完成打包并生成", callback_data="finish_group")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = (
         f"📦 **正在收集文件中...**\n\n"
         f"当前已累计暂存：**{total_count}** 个文件\n"
-        f"💡 你可以继续发送（支持几十个视频/图片），发完后点击下方按钮。"
-    )
-
-    current_msg_id = UPLOADING_SESSIONS[chat_id]["msg_id"]
-
-    try:
-        if current_msg_id is None:
-            # 第一次发文件，发送新提示消息
-            sent_msg = await message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-            UPLOADING_SESSIONS[chat_id]["msg_id"] = sent_msg.message_id
-        else:
-            # 之后不发新消息，直接编辑修改原消息的数字（实现无打扰更新）
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=current_msg_id,
-                text=text,
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
-            )
-    except Exception:
-        # 如果用户把提示消息删了，则重新发一条
-        sent_msg = await message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-        UPLOADING_SESSIONS[chat_id]["msg_id"] = sent_msg.message_id
-
-# ==========================================
-# 3. 点击完成打包按钮
-# ==========================================
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    chat_id = query.message.chat_id
-
-    if query.data == "finish_group":
-        session_data = UPLOADING_SESSIONS.get(chat_id, {"files": [], "msg_id": None})
-        session_files = session_data["files"]
-
-        if not session_files:
-            await query.message.reply_text("❌ 当前没有待打包的文件。")
-            return
-
-        # 生成短码并保存
-        short_code = session_files[0]["file_id"][-8:]
-        GROUP_DATABASE[short_code] = session_files
-
-        # 清空当前会话
-        UPLOADING_SESSIONS[chat_id] = {"files": [], "msg_id": None}
-
-        bot_username = "Yinheximanyoua_bot"
-        raw_link = f"https://t.me/{bot_username}?start={short_code}"
-
-        text = (
-            f"🎉 **打包成功！**\n\n"
-            f"📁 包含文件总数：{len(session_files)} 个\n"
-            f"🔗 **合并分享链接**：\n"
-            f"[点击此链接获取全部文件]({raw_link})\n\n"
-            f"💡 超过10个文件时，系统会自动分批（每组10个）连续发给用户，完美避免报错。\n"
-            f"复制纯链接：\n`{raw_link}`"
-        )
-        await query.message.reply_text(text, parse_mode="Markdown")
-
-# ==========================================
-# 4. 用户通过 /start 触发，自动分批（翻页式）下发
-# ==========================================
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    chat_id = update.effective_chat.id
-
-    if args:
-        short_code = args[0]
-        file_list = GROUP_DATABASE.get(short_code)
-
-        if file_list:
-            total = len(file_list)
-            await update.message.reply_text(f"🔍 正在为您提取共 {total} 个文件，正在分批发送中...")
-
-            # 【核心解决10个限制】：自动按每 10 个一组切片分批发送
-            for i in range(0, total, 10):
-                chunk = file_list[i:i+10]
-                media_group = []
-                for item in chunk:
-                    if item["type"] == "photo":
-                        media_group.append(InputMediaPhoto(media=item["file_id"]))
-                    elif item["type"] == "video":
-                        media_group.append(InputMediaVideo(media=item["file_id"]))
-
-                try:
-                    # 分组连续下发相册
-                    await context.bot.send_media_group(chat_id=chat_id, media=media_group)
-                except Exception as e:
-                    await update.message.reply_text(f"❌ 发送分批文件出错: {e}")
-        else:
-            await update.message.reply_text("❌ 未找到该组文件的记录，链接可能已失效。")
-    else:
-        await update.message.reply_text("欢迎使用资源打包分发机器人！通过专属链接可获取完整相册。")
-
-# ==========================================
-# 5. 主程序入口
-# ==========================================
-def main():
-    token = os.environ.get("TOKEN")
-    if not token:
-        print("错误: 未找到 TOKEN 环境变量！")
-        return
-
-    application = ApplicationBuilder().token(token).build()
-
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handle_incoming_media))
-    application.add_handler(CallbackQueryHandler(button_callback))
-
-    print("网盘分发机器人正在运行...")
-    application.run_polling()
-
-if __name__ == "__main__":
-    main()
+        f"💡 发完
