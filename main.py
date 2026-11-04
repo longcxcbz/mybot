@@ -2,7 +2,7 @@ import logging
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -18,7 +18,6 @@ logging.basicConfig(
 )
 
 # 内存临时字典（用来存储 文件短码 -> file_id 的对应关系）
-# 提示：如果希望重启后不丢失，后期可以换成数据库，目前用于演示非常高效
 FILE_DATABASE = {}
 
 # ==========================================
@@ -57,15 +56,15 @@ async def handle_incoming_media(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         return
 
-    # 生成一个简短的唯一编号（例如取 file_id 的前 8 位当作代号）
+    # 生成一个简短的唯一编号（取 file_id 的前 8 位）
     short_code = file_id[-8:]
     FILE_DATABASE[short_code] = file_id
 
-    # 你的机器人用户名（请把 "你的机器人用户名" 换成你自己的机器人 username，比如 my_bot）
-    bot_username = context.bot.username
+    # 直接写死你的真实机器人用户名
+    bot_username = "Yinheximanyoua_bot"
     share_link = f"https://t.me/{bot_username}?start={short_code}"
 
-    # 返回类似截图中的登记成功提示与分享链接
+    # 返回登记成功提示与分享链接
     text = (
         f"✅ **已接收并保存登记**\n\n"
         f"📦 类型：{file_type}\n"
@@ -98,7 +97,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     await update.message.reply_text("❌ 文件提取失败或已失效。")
         else:
-            await update.message.reply_text("❌ 未找到该文件的记录，链接可能已失效。")
+            await update.message.reply_text("❌ 未找到该文件的记录，链接可能已失效（如服务重启过）。")
     else:
         await update.message.reply_text("欢迎使用资源分发机器人！请通过专属链接获取内容。")
 
