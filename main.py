@@ -39,7 +39,7 @@ def run_web_server():
 threading.Thread(target=run_web_server, daemon=True).start()
 
 # ==========================================
-# 2. 核心功能 A：接收你发的文件，生成防掉下划线的安全链接
+# 2. 核心功能 A：接收你发的文件，生成安全链接
 # ==========================================
 async def handle_incoming_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
@@ -60,11 +60,11 @@ async def handle_incoming_media(update: Update, context: ContextTypes.DEFAULT_TY
     short_code = file_id[-8:]
     FILE_DATABASE[short_code] = file_id
 
-    # 严格写死你的真实 Telegram 用户名（带下划线和正确大小写）
-    bot_username = "Yinheximanyoua_bot"
+    # 已经更新为你新的机器人用户名
+    bot_username = "yinhea_bot"
     raw_link = f"https://t.me/{bot_username}?start={short_code}"
 
-    # 使用 Markdown 超链接语法，彻底避免下划线被吞或点错
+    # 返回登记成功提示与分享链接
     text = (
         f"✅ **已接收并保存登记**\n\n"
         f"📦 类型：{file_type}\n"
