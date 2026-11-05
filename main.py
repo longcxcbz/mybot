@@ -14,19 +14,14 @@ from telegram.ext import (
     filters,
 )
 
+# 💡 导入单独的广告配置文件
+import config
+
 # 开启日志
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
-
-# ==========================================
-# 🎁 广告配置区域（以后只需在这里修改文案和链接即可）
-# ==========================================
-AD_TEXT = "赞助商/长期福利：苹果限免App每日分享，精品资源不迷路！"
-AD_BUTTON_TEXT = "关注优质广告频道"
-AD_BUTTON_URL = "https://t.me/你的频道链接"
-# ==========================================
 
 # ==========================================
 # 0. 初始化 SQLite 数据库
@@ -84,7 +79,6 @@ def db_delete_resource(short_code):
     conn.commit()
     conn.close()
 
-# 临时会话缓存
 UPLOADING_SESSIONS = {}
 
 # ==========================================
@@ -106,7 +100,7 @@ def run_web_server():
 threading.Thread(target=run_web_server, daemon=True).start()
 
 # ==========================================
-# 2. 接收文件：防刷屏动态更新
+# 2. 接收文件（包含实时更新广告位）
 # ==========================================
 async def handle_incoming_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
@@ -129,25 +123,34 @@ async def handle_incoming_media(update: Update, context: ContextTypes.DEFAULT_TY
     UPLOADING_SESSIONS[chat_id]["files"].append({"type": file_type, "file_id": file_id})
     total_count = len(UPLOADING_SESSIONS[chat_id]["files"])
 
-    keyboard = [[InlineKeyboardButton("已接收完，完成打包并生成", callback_data="finish_group")]]
+    text = (
+        f"📦 **正在收集文件中...**\n\n"
+        f"当前已累计暂存：**{total_count}** 个文件\n"
+        f"💡 发完后点击下方按钮生成链接。\n\n"
+        f"{config.AD_TEXT}"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("✅ 已接收完，完成打包并生成", callback_data="finish_group")],
+        [InlineKeyboardButton(config.AD_BUTTON_TEXT, url=config.AD_BUTTON_URL)]
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    text = f"正在收集文件中...\n\n当前已累计暂存：{total_count} 个文件\n发完后点击下方按钮生成链接。"
 
     current_msg_id = UPLOADING_SESSIONS[chat_id]["msg_id"]
     try:
         if current_msg_id is None:
-            sent_msg = await message.reply_text(text, reply_markup=reply_markup)
+            sent_msg = await message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
             UPLOADING_SESSIONS[chat_id]["msg_id"] = sent_msg.message_id
         else:
             await context.bot.edit_message_text(
-                chat_id=chat_id, message_id=current_msg_id, text=text, reply_markup=reply_markup
+                chat_id=chat_id, message_id=current_msg_id, text=text, reply_markup=reply_markup, parse_mode="Markdown"
             )
     except Exception:
-        sent_msg = await message.reply_text(text, reply_markup=reply_markup)
+        sent_msg = await message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
         UPLOADING_SESSIONS[chat_id]["msg_id"] = sent_msg.message_id
 
 # ==========================================
-# 3. 按钮回调（打包生成 或 管理后台操作）
+# 3. 按钮回调（打包生成 / 管理后台）
 # ==========================================
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -160,66 +163,78 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session_files = session_data["files"]
 
         if not session_files:
-            await query.message.reply_text("当前没有待打包的文件。")
+            await query.message.reply_text("❌ 当前没有待打包的文件。")
             return
 
         short_code = session_files[0]["file_id"][-8:]
         db_save_resource(short_code, session_files)
         UPLOADING_SESSIONS[chat_id] = {"files": [], "msg_id": None}
 
-        bot_username = "Yinheximanyoua_bot"
-        raw_link = f"https://t.me/{bot_username}?start={short_code}"
+        raw_link = f"https://t.me/{config.BOT_USERNAME}?start={short_code}"
 
         text = (
-            f"打包成功并已永久保存！\n\n"
-            f"包含文件总数：{len(session_files)} 个\n"
-            f"专属分享链接：\n{raw_link}\n\n"
-            f"{AD_TEXT}\n\n"
-            f"发送 /admin 可以管理历史文件。"
+            f"🎉 **打包成功并已永久保存！**\n\n"
+            f"📁 包含文件总数：{len(session_files)} 个\n"
+            f"🔗 **合并分享链接**：\n"
+            f"[点击此链接获取全部文件]({raw_link})\n\n"
+            f"{config.AD_TEXT}\n\n"
+            f"💡 发送 /glwj 可以随时管理历史文件。\n"
+            f"复制纯链接：\n`{raw_link}`"
         )
         
         keyboard = [
-            [InlineKeyboardButton("点击获取全部文件", url=raw_link)],
-            [InlineKeyboardButton(AD_BUTTON_TEXT, url=AD_BUTTON_URL)]
+            [InlineKeyboardButton("🔗 点击获取全部文件", url=raw_link)],
+            [InlineKeyboardButton(config.AD_BUTTON_TEXT, url=config.AD_BUTTON_URL)]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await query.message.reply_text(text, reply_markup=reply_markup)
+        if config.AD_PHOTO:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=config.AD_PHOTO,
+                caption=text,
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+        else:
+            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
     elif data.startswith("del_"):
         short_code = data.split("_")[1]
         db_delete_resource(short_code)
-        await query.message.edit_text(f"已成功删除代码为 {short_code} 的资源记录。")
+        await query.message.edit_text(f"🗑️ 已成功删除代码为 `{short_code}` 的资源记录。", parse_mode="Markdown")
 
     elif data.startswith("view_"):
         short_code = data.split("_")[1]
-        bot_username = "Yinheximanyoua_bot"
-        raw_link = f"https://t.me/{bot_username}?start={short_code}"
-        await query.message.reply_text(f"资源详情\n识别码：{short_code}\n链接：\n{raw_link}")
+        raw_link = f"https://t.me/{config.BOT_USERNAME}?start={short_code}"
+        await query.message.reply_text(
+            f"📌 **资源详情**\n识别码：`{short_code}`\n链接：\n`{raw_link}`",
+            parse_mode="Markdown"
+        )
 
 # ==========================================
-# 4. 管理后台菜单：/admin 命令
+# 4. 资源管理后台：/glwj 命令
 # ==========================================
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def glwj_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     resources = db_get_all_resources()
 
     if not resources:
-        await update.message.reply_text("目前数据库中还没有保存任何资源文件。")
+        await update.message.reply_text("📂 目前数据库中还没有保存任何资源文件。")
         return
 
-    text = f"资源管理后台\n共找到 {len(resources)} 组历史保存的文件：\n"
+    text = f"🛠️ **资源管理后台**\n共找到 {len(resources)} 组历史保存的文件：\n\n"
     keyboard = []
 
     for item in resources:
         code = item["short_code"]
         count = item["count"]
         keyboard.append([
-            InlineKeyboardButton(f"资源 {code} ({count}个)", callback_data=f"view_{code}"),
-            InlineKeyboardButton("删除", callback_data=f"del_{code}")
+            InlineKeyboardButton(f"📦 资源 {code} ({count}个文件)", callback_data=f"view_{code}"),
+            InlineKeyboardButton("❌ 删除", callback_data=f"del_{code}")
         ])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(text, reply_markup=reply_markup)
+    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
 # ==========================================
 # 5. 用户通过 /start 触发下发
@@ -234,7 +249,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if file_list:
             total = len(file_list)
-            await update.message.reply_text(f"正在为您提取共 {total} 个文件，分批发送中...")
+            await update.message.reply_text(f"🔍 正在为您提取共 {total} 个文件，正在分批发送中...")
 
             for i in range(0, total, 10):
                 chunk = file_list[i:i+10]
@@ -248,9 +263,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     await context.bot.send_media_group(chat_id=chat_id, media=media_group)
                 except Exception as e:
-                    await update.message.reply_text(f"发送分批文件出错: {e}")
+                    await update.message.reply_text(f"❌ 发送分批文件出错: {e}")
         else:
-            await update.message.reply_text("未找到该组文件的记录，链接可能已失效。")
+            await update.message.reply_text("❌ 未找到该组文件的记录，链接可能已失效。")
     else:
         await update.message.reply_text("欢迎使用资源打包分发机器人！通过专属链接可获取完整相册。")
 
@@ -266,7 +281,7 @@ def main():
     application = ApplicationBuilder().token(token).build()
 
     application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("admin", admin_command))
+    application.add_handler(CommandHandler("glwj", glwj_command))  # 💡 已将命令改为 /glwj
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handle_incoming_media))
     application.add_handler(CallbackQueryHandler(button_callback))
 
